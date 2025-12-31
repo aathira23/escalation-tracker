@@ -59,7 +59,7 @@ export const escalationsApi = {
      * Update escalation status
      */
     updateStatus: async (id: string, data: EscalationStatusUpdate): Promise<Escalation> => {
-        const response = await apiClient.put<Escalation>(`/api/escalations/${id}/status`, data);
+        const response = await apiClient.patch<Escalation>(`/api/escalations/${id}/status`, data);
         return response.data;
     },
 
@@ -84,6 +84,14 @@ export const escalationsApi = {
      */
     addNote: async (id: string, data: NoteCreate): Promise<Note> => {
         const response = await apiClient.post<Note>(`/api/escalations/${id}/notes`, data);
+        return response.data;
+    },
+
+    /**
+     * Get AI-driven assignee recommendations
+     */
+    getRecommendations: async (id: string): Promise<any[]> => {
+        const response = await apiClient.get<any[]>(`/api/escalations/${id}/recommendations`);
         return response.data;
     },
 };

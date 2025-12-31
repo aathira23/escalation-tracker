@@ -22,8 +22,12 @@ class Settings(BaseSettings):
     
     # Email Ingestion
     imap_server: str = "outlook.office365.com"
+    imap_port: int = 993
+    imap_use_ssl: bool = True
     imap_email: str = ""
     imap_password: str = ""
+    imap_folder: str = "INBOX"
+    imap_processed_folder: str = "Processed"
     mock_email_ingestion: bool = True
     
     # Redis

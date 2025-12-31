@@ -8,6 +8,7 @@ from app.models.escalation import Escalation
 from app.models.ai_suggestion import AISuggestion
 from app.models.user import User, UserRole
 from app.models.project import Project
+from app.models.raw_complaint import RawComplaint
 from datetime import datetime
 import uuid
 
@@ -29,7 +30,11 @@ def verify_lifecycle():
         result = process_single_email(db, email_data)
         
         if not result:
-            print("FAILED: process_single_email returned False. Check if client 'ACME Corp' exists.")
+            print("FAILED: process_single_email returned False.")
+            # Fetch the raw complaint to see the error
+            rc = db.query(RawComplaint).filter(RawComplaint.email_id == email_data["email_id"]).first()
+            if rc:
+                print(f"Processing Error: {rc.processing_error}")
             return
 
         # Fetch the created escalation

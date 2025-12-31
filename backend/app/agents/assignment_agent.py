@@ -4,10 +4,13 @@ Uses Google Gemini to recommend the best resolver for an escalation.
 Note: This agent recommends only - managers make final assignment decisions.
 """
 import json
-from typing import Optional
+from typing import Optional, List
 from dataclasses import dataclass
 
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
 
 from app.config import get_settings
 
@@ -38,31 +41,31 @@ class AssignmentAgent:
     Note: This agent provides recommendations only. Managers make final decisions.
     """
     
-    SYSTEM_PROMPT = """You are an AI assignment advisor for an internal escalation tracking system.
-Your job is to recommend the best team member to resolve an escalation.
+    SYSTEM_PROMPT = """You are an expert AI resource manager for an escalation team.
+Your job is to recommend the best team member to resolve an escalation, ensuring the fastest resolution and highest customer satisfaction.
 
-Consider:
-1. **Expertise Match**: Does the resolver have relevant expertise tags?
-2. **Workload**: Prefer resolvers who aren't at capacity
-3. **Priority vs Speed**: High priority issues need quick resolution
+Decision Criteria:
+1. **Expertise Synergy**: Match the escalation's technical or domain type with the resolver's expertise tags.
+2. **Dynamic Workload**: Prioritize resolvers who have current capacity. Avoid overloading high-performers.
+3. **Priority Alignment**: For critical or high-priority escalations, prefer resolvers with proven expertise in those areas, even if their workload is slightly higher.
 
 You will receive:
-- Escalation details (type, priority, description)
-- Available resolvers with their expertise and workload
+- Escalation metadata (type, priority, title, description)
+- A list of available resolvers with their specific expertise and current/max workload
 
 Respond ONLY with valid JSON in this exact format:
 {
     "recommended_user_id": "uuid string",
     "recommended_user_name": "string",
-    "reason": "Brief explanation of why this person is best suited",
-    "confidence": float between 0.0 and 1.0,
+    "reason": "Provide a detailed, compelling justification explaining why this specific resolver is the best choice (citing expertise and workload balance).",
+    "confidence": float (percentage of confidence from 0.0 to 1.0),
     "alternative_user_id": "uuid string or null",
-    "alternative_reason": "string or null"
+    "alternative_reason": "Justification for a secondary option if the primary is unavailable."
 }"""
     
     def __init__(self):
         """Initialize the Gemini model."""
-        if settings.gemini_api_key:
+        if settings.gemini_api_key and genai:
             genai.configure(api_key=settings.gemini_api_key)
             self.model = genai.GenerativeModel('gemini-2.0-flash')
         else:
@@ -74,7 +77,7 @@ Respond ONLY with valid JSON in this exact format:
         escalation_description: str,
         escalation_type: str,
         escalation_priority: str,
-        available_resolvers: list[dict]
+        available_resolvers: List[dict]
     ) -> Optional[AssignmentRecommendation]:
         """
         Recommend the best resolver for an escalation.
@@ -142,7 +145,7 @@ Who should handle this escalation?"""
             print(f"Error getting AI recommendation: {e}")
             return self._default_recommendation(available_resolvers)
     
-    def _default_recommendation(self, resolvers: list[dict]) -> Optional[AssignmentRecommendation]:
+    def _default_recommendation(self, resolvers: List[dict]) -> Optional[AssignmentRecommendation]:
         """Return default recommendation (lowest workload) when AI is unavailable."""
         if not resolvers:
             return None

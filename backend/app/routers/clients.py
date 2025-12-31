@@ -5,7 +5,7 @@ Handles client management endpoints.
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 
 from app.database import get_db
 from app.schemas.client import ClientCreate, ClientUpdate, ClientResponse
@@ -16,7 +16,7 @@ from app.models.user import User
 router = APIRouter(prefix="/api/clients", tags=["Clients"])
 
 
-@router.get("", response_model=list[ClientResponse])
+@router.get("", response_model=List[ClientResponse])
 async def list_clients(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)

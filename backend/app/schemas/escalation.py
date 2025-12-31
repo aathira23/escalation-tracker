@@ -3,7 +3,7 @@ Escalation Schemas
 Pydantic models for escalation-related API operations.
 """
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
 from enum import Enum
@@ -108,7 +108,7 @@ class EscalationResponse(BaseModel):
     aiRecommendedAssigneeId: Optional[UUID]
     aiAssignmentReason: Optional[str]
     aiAssignmentConfidence: Optional[float]
-    aiSuggestions: Optional[list[AISuggestionResponse]] = None
+    aiSuggestions: Optional[List[AISuggestionResponse]] = None
     dueDate: datetime
     resolvedAt: Optional[datetime]
     daysUntilDue: int
@@ -156,7 +156,7 @@ class EscalationResponse(BaseModel):
 
 class EscalationListResponse(BaseModel):
     """Schema for paginated escalation list."""
-    items: list[EscalationResponse]
+    items: List[EscalationResponse]
     total: int
     page: int
     pageSize: int

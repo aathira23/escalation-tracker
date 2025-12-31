@@ -2,12 +2,13 @@
 Analytics Router
 Handles analytics and reporting endpoints.
 """
+from typing import List, Optional
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.analytics_service import AnalyticsService
-from app.schemas.analytics import DashboardStats, ClientAnalytics, TeamAnalytics
+from app.schemas.analytics import DashboardStats, ClientAnalytics, TeamAnalytics, Insights, ComplaintCluster
 from app.dependencies import require_manager_or_admin
 from app.models.user import User
 
@@ -48,3 +49,27 @@ async def get_team_analytics(
     Shows workload, resolution rates, and utilization per team member.
     """
     return AnalyticsService.get_team_analytics(db)
+
+
+@router.get("/insights", response_model=Insights)
+async def get_ai_insights(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_manager_or_admin)
+):
+    """
+    Get AI-generated strategic insights.
+    Analyzes trends, bottlenecks, and systematic issues.
+    """
+    return AnalyticsService.get_ai_insights(db)
+
+
+@router.get("/clusters", response_model=List[ComplaintCluster])
+async def get_complaint_clusters(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_manager_or_admin)
+):
+    """
+    Get AI-grouped complaint clusters.
+    Managers and admins only.
+    """
+    return AnalyticsService.get_complaint_clusters(db)

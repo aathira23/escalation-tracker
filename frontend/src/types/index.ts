@@ -15,6 +15,10 @@ export interface User {
     maxConcurrentEscalations: number;
     currentEscalationCount: number;
     isActive: boolean;
+    departmentId?: string | null;
+    departmentName?: string | null;
+    projectIds: string[];
+    projectNames: string[];
     createdAt: string;
     updatedAt: string;
 }
@@ -26,6 +30,7 @@ export interface UserCreate {
     role?: UserRole;
     expertise_tags?: string[];
     max_concurrent_escalations?: number;
+    department_id?: string;
 }
 
 export interface LoginCredentials {
@@ -245,6 +250,43 @@ export interface TeamAnalytics {
     members: TeamMemberAnalytics[];
     totalMembers: number;
     overloadedMembers: number;
+}
+
+export interface ComplaintTypeBreakdown {
+    complaintType: string;
+    count: number;
+    percentage: number;
+}
+
+export interface InsightItem {
+    category: string;
+    title: string;
+    description: string;
+    severity: 'info' | 'warning' | 'critical';
+    actionable: boolean;
+}
+
+export interface Insights {
+    topComplaintTypes: ComplaintTypeBreakdown[];
+    insights: InsightItem[];
+    generatedAt: string;
+}
+
+export interface ClusterItem {
+    id: string;
+    title: string;
+    clientName: string | null;
+    createdAt: string;
+}
+
+export interface ComplaintCluster {
+    id: string;
+    name: string;
+    description: string;
+    severity: 'info' | 'warning' | 'critical';
+    count: number;
+    items: ClusterItem[];
+    isRecurrence: boolean;
 }
 
 // API Error

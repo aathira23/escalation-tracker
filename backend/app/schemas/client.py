@@ -3,7 +3,7 @@ Client Schemas
 Pydantic models for client-related API operations.
 """
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
 
@@ -14,7 +14,7 @@ class ClientCreate(BaseModel):
     """Schema for creating a new client."""
     name: str = Field(..., min_length=1, max_length=255)
     email_domain: Optional[str] = Field(None, max_length=255)
-    contact_emails: list[EmailStr] = []
+    contact_emails: List[EmailStr] = []
     industry: Optional[str] = Field(None, max_length=100)
     account_manager_id: Optional[UUID] = None
 
@@ -23,7 +23,7 @@ class ClientUpdate(BaseModel):
     """Schema for updating client details."""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     email_domain: Optional[str] = Field(None, max_length=255)
-    contact_emails: Optional[list[EmailStr]] = None
+    contact_emails: Optional[List[EmailStr]] = None
     industry: Optional[str] = Field(None, max_length=100)
     account_manager_id: Optional[UUID] = None
 
@@ -35,7 +35,7 @@ class ClientResponse(BaseModel):
     id: UUID
     name: str
     emailDomain: Optional[str]
-    contactEmails: list[str]
+    contactEmails: List[str]
     industry: Optional[str]
     accountManagerId: Optional[UUID]
     riskScore: float

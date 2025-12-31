@@ -158,46 +158,52 @@ def process_mock_emails(manual_trigger_email_id: Optional[str] = None) -> dict:
 def process_imap_emails() -> dict:
     """
     Fetch emails from IMAP server (production mode).
+    Uses EmailService for connection and parsing.
     """
-    # Only import if needed (to avoid dependency issues in dev)
     try:
-        from imapclient import IMAPClient
+        from app.services.email_service import EmailService
     except ImportError:
-        return {"error": "imapclient not installed", "processed": 0}
-    
-    if not all([settings.imap_server, settings.imap_email, settings.imap_password]):
-        return {"error": "IMAP credentials not configured", "processed": 0}
+        return {"error": "EmailService dependencies missing", "processed": 0}
     
     db = SessionLocal()
     processed = 0
+    errors = 0
     
     try:
-        with IMAPClient(settings.imap_server, ssl=True) as client:
-            client.login(settings.imap_email, settings.imap_password)
-            client.select_folder('INBOX')
-            
-            # Search for unread emails
-            messages = client.search(['UNSEEN'])
-            
-            for uid, message_data in client.fetch(messages, ['RFC822', 'ENVELOPE']).items():
-                envelope = message_data[b'ENVELOPE']
-                
-                # Extract email details
-                email_data = {
-                    "email_id": envelope.message_id.decode() if envelope.message_id else str(uuid.uuid4()),
-                    "sender_email": envelope.from_[0].mailbox.decode() + "@" + envelope.from_[0].host.decode() if envelope.from_ else "",
-                    "sender_name": envelope.from_[0].name.decode() if envelope.from_ and envelope.from_[0].name else None,
-                    "subject": envelope.subject.decode() if envelope.subject else "",
-                    "body": message_data[b'RFC822'].decode('utf-8', errors='ignore'),
-                    "received_at": envelope.date
-                }
-                
-                if process_single_email(db, email_data):
-                    processed += 1
-                    # Mark as read
-                    client.add_flags([uid], ['\\Seen'])
+        # Fetch unread emails using the service
+        # It handles connection, folder selection, and parsing
+        emails = EmailService.fetch_unread_emails(limit=20)
         
-        return {"processed": processed, "mode": "imap"}
+        if not emails:
+            return {"processed": 0, "mode": "imap", "status": "no_emails"}
+            
+        for email_data in emails:
+            uid = email_data.pop("uid") # Remove IMAP UID from data passed to processor
+            
+            try:
+                success = process_single_email(db, email_data)
+                
+                # Mark as processed (move folder or flag)
+                EmailService.mark_as_processed(uid, success)
+                
+                if success:
+                    processed += 1
+                else:
+                    errors += 1
+                    
+            except Exception as e:
+                print(f"Error processing email {email_data.get('email_id')}: {e}")
+                errors += 1
+                # Still try to mark as processed/flagged so we don't loop forever?
+                # For now, maybe just leave it as unseen if it crashed hard?
+                # Or better, mark as Seen so valid ones aren't blocked?
+                # Let's rely on mark_as_processed default behavior (flagging)
+                try:
+                    EmailService.mark_as_processed(uid, False)
+                except:
+                    pass
+        
+        return {"processed": processed, "errors": errors, "mode": "imap"}
         
     except Exception as e:
         return {"error": str(e), "processed": processed}
@@ -251,55 +257,25 @@ def process_single_email(db, email_data: dict) -> bool:
             db.commit()
             return False
         
-        # Analyze with AI agent
-        agent = ComplaintIntelligenceAgent()
-        analysis = agent.analyze_complaint(
-            email_data["subject"],
-            email_data["body"],
-            email_data["sender_email"]
-        )
-        
         # Get system user for creation (or first admin)
         system_user = db.query(User).filter(User.role == UserRole.ADMIN).first()
         if not system_user:
             raw_complaint.processing_error = "No admin user available to create escalation"
             db.commit()
             return False
-        
+            
         # Create escalation
-        from app.models.escalation import EscalationPriority
-        priority_map = {
-            "low": EscalationPriority.LOW,
-            "medium": EscalationPriority.MEDIUM,
-            "high": EscalationPriority.HIGH,
-            "critical": EscalationPriority.CRITICAL
-        }
-        
-        # Map type to project
-        project_id = EscalationService._map_type_to_project(db, analysis.complaint_type)
-        
         escalation = EscalationService.create_escalation(
             db,
-            title=analysis.title,
-            description=analysis.description,
+            title=email_data["subject"][:500], # Initial title
+            description=email_data["body"],
             client_id=client.id,
-            project_id=project_id,
-            created_by=system_user.id,
-            executive_summary=analysis.executive_summary,
-            priority=priority_map.get(analysis.priority, EscalationPriority.MEDIUM),
-            complaint_type=analysis.complaint_type,
-            sentiment_score=analysis.sentiment_score,
-            churn_risk=analysis.churn_risk
+            project_id=None, # Will be mapped by AI
+            created_by=system_user.id
         )
         
-        # Trigger moderator suggestion
-        EscalationService.get_suggested_moderators(db, escalation.id)
-        
-        # Store resolution suggestions
-        if analysis.resolution_suggestions:
-            EscalationService.store_ai_resolution_suggestions(
-                db, escalation.id, analysis.resolution_suggestions
-            )
+        # Trigger Unified AI Processing
+        EscalationService.process_ai_intelligence(db, escalation.id)
         
         # Link raw complaint to escalation
         raw_complaint.processed = True

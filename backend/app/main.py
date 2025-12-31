@@ -4,6 +4,8 @@ Escalation Tracker - Internal Escalation Intelligence Platform
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+import os
 
 from app.config import get_settings
 from app.routers import (
@@ -12,7 +14,8 @@ from app.routers import (
     clients_router,
     escalations_router,
     notes_router,
-    analytics_router
+    analytics_router,
+    departments_router
 )
 from app.core.websocket import manager
 from jose import jwt
@@ -58,6 +61,7 @@ app.include_router(clients_router)
 app.include_router(escalations_router)
 app.include_router(notes_router)
 app.include_router(analytics_router)
+app.include_router(departments_router)
 
 
 @app.get("/", tags=["Health"])
@@ -102,3 +106,23 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id)
+
+
+# Catch-all route for SPA
+@app.get("/{full_path:path}")
+async def catch_all(full_path: str):
+    """
+    Catch-all route to serve the frontend index.html for any non-API requests.
+    This enables browser refreshes to work correctly with React Router.
+    """
+    # If the path starts with api/, it's a 404 (handled by default FastAPI 404)
+    # But if we are here, we should serve index.html if it's not an API call
+    if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("redoc") or full_path.startswith("openapi.json"):
+        return {"detail": "Not Found"}
+    
+    # Path to frontend index.html
+    frontend_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "frontend", "index.html")
+    if os.path.exists(frontend_path):
+        return FileResponse(frontend_path)
+    
+    return {"detail": "Frontend not found"}

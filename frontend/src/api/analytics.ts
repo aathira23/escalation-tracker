@@ -2,7 +2,7 @@
  * Analytics API
  */
 import apiClient from './client';
-import type { DashboardStats, ClientAnalytics, TeamAnalytics } from '../types';
+import type { DashboardStats, ClientAnalytics, TeamAnalytics, Insights, ComplaintCluster } from '../types';
 
 export const analyticsApi = {
     /**
@@ -26,6 +26,22 @@ export const analyticsApi = {
      */
     getTeamAnalytics: async (): Promise<TeamAnalytics> => {
         const response = await apiClient.get<TeamAnalytics>('/api/analytics/team');
+        return response.data;
+    },
+
+    /**
+     * Get AI-generated strategic insights
+     */
+    getAIInsights: async (): Promise<Insights> => {
+        const response = await apiClient.get<Insights>('/api/analytics/insights');
+        return response.data;
+    },
+
+    /**
+     * Get AI-grouped complaint clusters
+     */
+    getClusters: async (): Promise<ComplaintCluster[]> => {
+        const response = await apiClient.get<ComplaintCluster[]>('/api/analytics/clusters');
         return response.data;
     },
 };

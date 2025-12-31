@@ -5,10 +5,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Filter, Plus, Search, AlertTriangle } from 'lucide-react';
+import { Filter, Plus, Search, AlertTriangle, X } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 
 import Header from '../components/layout/Header';
 import { escalationsApi } from '../api/escalations';
+import { clientsApi } from '../api/clients';
 import { useFilterStore } from '../stores/filterStore';
 import { useAuthStore } from '../stores/authStore';
 import {
@@ -18,12 +21,147 @@ import {
     getStatusClass,
     getPriorityClass
 } from '../utils/formatters';
-import type { EscalationStatus, EscalationPriority } from '../types';
+import type { EscalationStatus, EscalationPriority, EscalationCreate } from '../types';
+
+interface CreateModalProps {
+    isOpen: boolean;
+    onClose: () => void;
+}
+
+function CreateEscalationModal({ isOpen, onClose }: CreateModalProps) {
+    const queryClient = useQueryClient();
+    const [title, setTitle] = useState('');
+    const [description, setDescription] = useState('');
+    const [clientId, setClientId] = useState('');
+    const [priority, setPriority] = useState<EscalationPriority>('medium');
+
+    // Fetch clients for dropdown
+    const { data: clients } = useQuery({
+        queryKey: ['clients-all'],
+        queryFn: clientsApi.getAll,
+        enabled: isOpen,
+    });
+
+    const createMutation = useMutation({
+        mutationFn: (data: EscalationCreate) => escalationsApi.create(data),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['escalations'] });
+            toast.success('Escalation created successfully');
+            onClose();
+            // Reset form
+            setTitle('');
+            setDescription('');
+            setClientId('');
+            setPriority('medium');
+        },
+        onError: (err: any) => {
+            toast.error(err.response?.data?.detail || 'Failed to create escalation');
+        }
+    });
+
+    if (!isOpen) return null;
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!clientId) {
+            toast.error('Please select a client');
+            return;
+        }
+        createMutation.mutate({
+            title,
+            description,
+            client_id: clientId,
+            priority,
+        });
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+            <div className="glass-card w-full max-w-lg border-primary-500/30 overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-200">
+                <div className="flex items-center justify-between p-4 border-b border-slate-800">
+                    <h3 className="text-lg font-bold text-white">Create New Escalation</h3>
+                    <button onClick={onClose} className="p-1 hover:bg-slate-800 rounded-md transition-colors text-slate-400">
+                        <X size={20} />
+                    </button>
+                </div>
+
+                <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Title</label>
+                        <input
+                            required
+                            type="text"
+                            value={title}
+                            onChange={(e) => setTitle(e.target.value)}
+                            placeholder="Brief summary of the issue"
+                            className="input-field"
+                        />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Client</label>
+                            <select
+                                required
+                                value={clientId}
+                                onChange={(e) => setClientId(e.target.value)}
+                                className="input-field"
+                            >
+                                <option value="">Select Client</option>
+                                {clients?.map(client => (
+                                    <option key={client.id} value={client.id}>{client.name}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Priority</label>
+                            <select
+                                value={priority}
+                                onChange={(e) => setPriority(e.target.value as EscalationPriority)}
+                                className="input-field"
+                            >
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                                <option value="critical">Critical</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Description</label>
+                        <textarea
+                            required
+                            value={description}
+                            onChange={(e) => setDescription(e.target.value)}
+                            placeholder="Detailed explanation of the escalation..."
+                            className="input-field min-h-[120px]"
+                        />
+                    </div>
+
+                    <div className="pt-4 flex gap-3">
+                        <button type="button" onClick={onClose} className="flex-1 btn-secondary">
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={createMutation.isPending}
+                            className="flex-1 btn-primary"
+                        >
+                            {createMutation.isPending ? 'Creating...' : 'Create Escalation'}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+}
 
 export default function EscalationsPage() {
     const { user } = useAuthStore();
     const { filters, setFilter, setPage, resetFilters } = useFilterStore();
     const [searchQuery, setSearchQuery] = useState('');
+    const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
     const isManagerOrAdmin = user?.role === 'admin' || user?.role === 'manager';
 
@@ -57,16 +195,27 @@ export default function EscalationsPage() {
                 <div className="glass-card p-4">
                     <div className="flex flex-col lg:flex-row gap-4">
                         {/* Search */}
-                        <div className="relative flex-1">
-                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                        <div className="relative flex-1 group">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-primary-400 transition-colors" />
                             <input
                                 type="text"
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
                                 placeholder="Search escalations..."
-                                className="input-field pl-10"
+                                className="input-field pl-10 focus:border-primary-500/50"
                             />
                         </div>
+
+                        {/* Assigned to Me Toggle */}
+                        <label className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-800/40 border border-slate-700/50 hover:border-primary-500/30 cursor-pointer transition-all">
+                            <input
+                                type="checkbox"
+                                checked={filters.assignedTo === user?.id}
+                                onChange={(e) => setFilter('assignedTo', e.target.checked ? user?.id : undefined)}
+                                className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-primary-500 focus:ring-primary-500/20"
+                            />
+                            <span className="text-sm font-medium text-slate-300 whitespace-nowrap">Assigned to me</span>
+                        </label>
 
                         {/* Status filter */}
                         <div className="flex items-center gap-2">
@@ -100,13 +249,22 @@ export default function EscalationsPage() {
 
                         {/* Create (managers only) */}
                         {isManagerOrAdmin && (
-                            <Link to="/escalations/new" className="btn-primary flex items-center gap-2">
+                            <button
+                                onClick={() => setIsCreateModalOpen(true)}
+                                className="btn-primary flex items-center gap-2"
+                            >
                                 <Plus size={18} />
                                 New Escalation
-                            </Link>
+                            </button>
                         )}
                     </div>
                 </div>
+
+                {/* Create Modal */}
+                <CreateEscalationModal
+                    isOpen={isCreateModalOpen}
+                    onClose={() => setIsCreateModalOpen(false)}
+                />
 
                 {/* Escalations table */}
                 <div className="glass-card overflow-hidden">

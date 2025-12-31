@@ -5,6 +5,7 @@ Handles internal notes for escalations.
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from typing import List
 
 from app.database import get_db
 from app.services.escalation_service import EscalationService
@@ -15,7 +16,7 @@ from app.models.user import User
 router = APIRouter(prefix="/api/escalations/{escalation_id}/notes", tags=["Notes"])
 
 
-@router.get("", response_model=list[NoteResponse])
+@router.get("", response_model=List[NoteResponse])
 async def list_notes(
     escalation_id: UUID,
     db: Session = Depends(get_db),

@@ -5,7 +5,7 @@ Handles user management endpoints.
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 
 from app.database import get_db
 from app.services.auth_service import AuthService
@@ -17,7 +17,7 @@ from app.schemas.user import UserResponse, UserUpdate, UserCreate
 router = APIRouter(prefix="/api/users", tags=["Users"])
 
 
-@router.get("", response_model=list[UserResponse])
+@router.get("", response_model=List[UserResponse])
 async def list_users(
     role: Optional[str] = None,
     include_inactive: bool = False,
@@ -44,7 +44,7 @@ async def list_users(
     # Manager filtering: only see users in shared projects
     if current_user.role == UserRole.MANAGER:
         project_ids = [p.id for p in current_user.projects]
-        query = query.join(User.projects).filter(Project.id.in_(project_ids))
+        query = query.join(User.projects).filter(Project.id.in_(project_ids)).distinct()
     
     users = query.all()
     return [UserResponse.from_orm_model(u) for u in users]
@@ -74,7 +74,8 @@ async def create_user(
         full_name=user_data.full_name,
         role=UserRole(user_data.role.value),
         expertise_tags=user_data.expertise_tags,
-        max_concurrent_escalations=user_data.max_concurrent_escalations
+        max_concurrent_escalations=user_data.max_concurrent_escalations,
+        department_id=user_data.department_id
     )
     
     return UserResponse.from_orm_model(user)
@@ -127,19 +128,29 @@ async def update_user(
     # Permission check
     is_self = current_user.id == user_id
     is_admin = current_user.role == UserRole.ADMIN
+    is_manager = current_user.role == UserRole.MANAGER
     
-    if not is_self and not is_admin:
+    # Manager can edit if they share at least one project
+    can_manager_edit = False
+    if is_manager:
+        manager_project_ids = {p.id for p in current_user.projects}
+        user_project_ids = {p.id for p in user.projects}
+        if manager_project_ids.intersection(user_project_ids):
+            can_manager_edit = True
+
+    if not is_self and not is_admin and not can_manager_edit:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this user"
         )
     
-    # Self can only update name; admin can update everything
-    if is_self and not is_admin:
-        if any([user_data.role, user_data.is_active is not None, user_data.expertise_tags, user_data.max_concurrent_escalations]):
+    # Self or Manager can only update name/active status (if defined by logic); admin can update everything
+    if (is_self or is_manager) and not is_admin:
+        # Check for fields that only Admins should touch
+        if any([user_data.role, user_data.expertise_tags is not None and not is_manager, user_data.max_concurrent_escalations and not is_manager, user_data.department_id, user_data.project_ids]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only admins can update role, status, and expertise settings"
+                detail="Only admins can update roles, departments, or project assignments"
             )
     
     # Apply updates
@@ -153,6 +164,12 @@ async def update_user(
         user.max_concurrent_escalations = user_data.max_concurrent_escalations
     if user_data.is_active is not None and is_admin:
         user.is_active = user_data.is_active
+    if user_data.department_id is not None and is_admin:
+        user.department_id = user_data.department_id
+    if user_data.project_ids is not None and is_admin:
+        # Update project memberships
+        projects = db.query(Project).filter(Project.id.in_(user_data.project_ids)).all()
+        user.projects = projects
     
     db.commit()
     db.refresh(user)
@@ -160,16 +177,28 @@ async def update_user(
     return UserResponse.from_orm_model(user)
 
 
-@router.get("/resolvers/available", response_model=list[UserResponse])
+@router.get("/resolvers/available", response_model=List[UserResponse])
 async def get_available_resolvers(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_manager_or_admin)
 ):
     """
     Get viewers who can be assigned as resolvers.
+    Admins see everyone.
+    Managers only see users in their projects.
     Filters out users at max capacity.
     """
-    viewers = AuthService.get_users_by_role(db, UserRole.VIEWER)
+    query = db.query(User).filter(
+        User.role == UserRole.VIEWER,
+        User.is_active == True
+    )
+    
+    # Manager filtering: only see users in shared projects
+    if current_user.role == UserRole.MANAGER:
+        project_ids = [p.id for p in current_user.projects]
+        query = query.join(User.projects).filter(Project.id.in_(project_ids))
+    
+    viewers = query.all()
     
     # Filter users who have capacity
     available = [

@@ -40,4 +40,20 @@ export const usersApi = {
         const response = await apiClient.post<User>('/api/users', userData);
         return response.data;
     },
+
+    /**
+     * Update user details
+     */
+    update: async (id: string, userData: any): Promise<User> => {
+        const response = await apiClient.put<User>(`/api/users/${id}`, userData);
+        return response.data;
+    },
+
+    /**
+     * Get all departments
+     */
+    getDepartments: async (): Promise<any[]> => {
+        const response = await apiClient.get<any[]>('/api/departments');
+        return response.data;
+    },
 };

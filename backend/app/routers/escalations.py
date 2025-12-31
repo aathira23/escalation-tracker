@@ -5,7 +5,7 @@ Handles escalation management endpoints.
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 import math
 
 from app.database import get_db
@@ -105,6 +105,12 @@ async def create_escalation(
         churn_risk=escalation_data.churn_risk
     )
     
+    # Process AI intelligence (will fill in executive_summary/suggestions if missing)
+    EscalationService.process_ai_intelligence(db, escalation.id)
+    
+    # Refresh to get AI updates
+    db.refresh(escalation)
+
     return EscalationResponse.from_orm_model(escalation)
 
 
@@ -144,6 +150,20 @@ async def update_escalation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Escalation not found"
         )
+    
+    # Manager/Admin check: restricted to department for managers
+    if current_user.role == UserRole.MANAGER:
+        is_assigned = escalation.assigned_to == current_user.id
+        # Check department match via project
+        can_access = False
+        if escalation.project and escalation.project.department_id == current_user.department_id:
+            can_access = True
+        
+        if not is_assigned and not can_access:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can only update escalations within their department"
+            )
     
     # Apply updates
     if escalation_data.title:
@@ -203,19 +223,19 @@ async def assign_escalation(
             detail="Can only assign escalations to viewers"
         )
     
-    # Manager permission check: Must be in the same project/department as the escalation
+    # Manager permission check: Must be in the same department as the escalation
     if current_user.role == UserRole.MANAGER:
-        # Check if manager is in the project
-        if escalation.project_id:
-            manager_in_project = db.query(User).join(User.projects).filter(
-                User.id == current_user.id,
-                Project.id == escalation.project_id
-            ).first()
-            if not manager_in_project:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Managers can only assign escalations in their own projects"
-                )
+        can_assign = False
+        if escalation.project and escalation.project.department_id == current_user.department_id:
+            can_assign = True
+        
+        # If project is not set, we might need a fallback or allow it if manager's department matches?
+        # For now, if project is missing, we stick to the stricter rule or allow if they created it?
+        if not can_assign:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can only assign escalations within their department"
+            )
     
     # Check capacity
     if assignee.current_escalation_count >= assignee.max_concurrent_escalations:
@@ -247,7 +267,7 @@ async def assign_escalation(
     return EscalationResponse.from_orm_model(escalation)
 
 
-@router.put("/{escalation_id}/status", response_model=EscalationResponse)
+@router.patch("/{escalation_id}/status", response_model=EscalationResponse)
 async def update_escalation_status(
     escalation_id: UUID,
     status_update: EscalationStatusUpdate,
@@ -267,13 +287,27 @@ async def update_escalation_status(
     
     # Permission check: resolver, manager, or admin
     is_resolver = escalation.assigned_to == current_user.id
-    is_manager_or_admin = current_user.role in [UserRole.ADMIN, UserRole.MANAGER]
+    is_manager = current_user.role == UserRole.MANAGER
+    is_admin = current_user.role == UserRole.ADMIN
     
-    if not is_resolver and not is_manager_or_admin:
+    if not is_resolver and not is_manager and not is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the assigned resolver, managers, or admins can update status"
         )
+    
+    # Extra check for managers: must be in the same department OR assigned to them
+    if is_manager and not is_resolver:
+        # Check department match via project
+        can_access = False
+        if escalation.project and escalation.project.department_id == current_user.department_id:
+            can_access = True
+        
+        if not can_access:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Managers can only update escalations within their department"
+            )
     
     try:
         escalation = EscalationService.update_status(
@@ -297,7 +331,7 @@ async def update_escalation_status(
     return EscalationResponse.from_orm_model(escalation)
 
 
-@router.get("/{escalation_id}/timeline", response_model=list[TimelineEventResponse])
+@router.get("/{escalation_id}/timeline", response_model=List[TimelineEventResponse])
 async def get_escalation_timeline(
     escalation_id: UUID,
     db: Session = Depends(get_db),
@@ -315,3 +349,15 @@ async def get_escalation_timeline(
     
     events = EscalationService.get_timeline(db, escalation_id)
     return [TimelineEventResponse.from_orm_model(e) for e in events]
+
+
+@router.get("/{escalation_id}/recommendations", response_model=List[dict])
+async def get_assignee_recommendations(
+    escalation_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_manager_or_admin)
+):
+    """
+    Get AI-driven assignee recommendations for an escalation (managers and admins only).
+    """
+    return EscalationService.get_assignee_recommendations(db, escalation_id)

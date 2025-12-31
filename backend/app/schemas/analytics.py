@@ -78,7 +78,7 @@ class ClientAnalyticsItem(BaseModel):
 
 class ClientAnalytics(BaseModel):
     """Schema for client analytics response."""
-    clients: list[ClientAnalyticsItem]
+    clients: List[ClientAnalyticsItem]
     totalClients: int
 
 
@@ -97,7 +97,7 @@ class TeamMemberAnalytics(BaseModel):
 
 class TeamAnalytics(BaseModel):
     """Schema for team performance analytics."""
-    members: list[TeamMemberAnalytics]
+    members: List[TeamMemberAnalytics]
     totalMembers: int
     overloadedMembers: int  # Members at max capacity
 
@@ -120,6 +120,24 @@ class InsightItem(BaseModel):
 
 class Insights(BaseModel):
     """Schema for AI-generated insights."""
-    topComplaintTypes: list[ComplaintTypeBreakdown]
-    insights: list[InsightItem]
+    topComplaintTypes: List[ComplaintTypeBreakdown]
+    insights: List[InsightItem]
     generatedAt: date
+
+class ClusterItem(BaseModel):
+    """A single complaint within a cluster."""
+    id: UUID
+    title: str
+    clientName: Optional[str]
+    createdAt: datetime
+
+
+class ComplaintCluster(BaseModel):
+    """A cluster of similar complaints."""
+    id: str
+    name: str
+    description: str
+    severity: str # info, warning, critical
+    count: int
+    items: List[ClusterItem]
+    isRecurrence: bool = False

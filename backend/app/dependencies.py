@@ -6,7 +6,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from app.config import get_settings
@@ -59,7 +59,7 @@ async def get_current_active_user(
     return current_user
 
 
-def require_role(allowed_roles: list[str]):
+def require_role(allowed_roles: List[str]):
     """
     Dependency factory that checks if user has one of the allowed roles.
     Usage: Depends(require_role(["admin", "manager"]))

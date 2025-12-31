@@ -13,6 +13,7 @@ import {
     ChevronLeft,
     ChevronRight,
     Zap,
+    Shield,
 } from 'lucide-react';
 
 import { useAuthStore } from '../../stores/authStore';
@@ -109,6 +110,14 @@ export default function Sidebar() {
                             label="Analytics"
                             collapsed={!sidebarOpen}
                         />
+                        {user.role === 'admin' && (
+                            <NavItem
+                                to="/settings"
+                                icon={<Shield size={20} />}
+                                label="System Admin"
+                                collapsed={!sidebarOpen}
+                            />
+                        )}
                     </>
                 )}
             </nav>

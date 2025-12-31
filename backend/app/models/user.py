@@ -5,7 +5,7 @@ Viewers become resolvers when assigned an escalation.
 """
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, Integer, DateTime, Enum as SQLEnum
+from sqlalchemy import Column, String, Boolean, Integer, DateTime, Enum as SQLEnum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 import enum
@@ -67,6 +67,9 @@ class User(Base):
     notes = relationship("Note", back_populates="author")
     
     # New relationships for project/department support
+    department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=True)
+    department = relationship("Department", back_populates="users")
+    
     projects = relationship("Project", secondary="project_users", back_populates="members")
     skills = relationship("Skill", secondary="user_skills", back_populates="users")
     

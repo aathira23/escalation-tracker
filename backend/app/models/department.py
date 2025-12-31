@@ -26,6 +26,7 @@ class Department(Base):
     
     # Relationships
     projects = relationship("Project", back_populates="department")
+    users = relationship("User", back_populates="department")
     
     def __repr__(self):
         return f"<Department {self.name}>"

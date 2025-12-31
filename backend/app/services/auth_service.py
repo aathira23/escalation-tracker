@@ -3,7 +3,7 @@ Authentication Service
 Handles user authentication, password hashing, and JWT token management.
 """
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from jose import jwt
@@ -61,8 +61,9 @@ class AuthService:
         password: str,
         full_name: str,
         role: UserRole = UserRole.VIEWER,
-        expertise_tags: list[str] = None,
-        max_concurrent_escalations: int = 5
+        expertise_tags: Optional[List[str]] = None,
+        max_concurrent_escalations: int = 5,
+        department_id: Optional[UUID] = None
     ) -> User:
         """Create a new user."""
         user = User(
@@ -71,7 +72,8 @@ class AuthService:
             full_name=full_name,
             role=role,
             expertise_tags=expertise_tags or [],
-            max_concurrent_escalations=max_concurrent_escalations
+            max_concurrent_escalations=max_concurrent_escalations,
+            department_id=department_id
         )
         db.add(user)
         db.commit()
@@ -89,7 +91,7 @@ class AuthService:
         return db.query(User).filter(User.email == email).first()
     
     @staticmethod
-    def get_all_users(db: Session, include_inactive: bool = False) -> list[User]:
+    def get_all_users(db: Session, include_inactive: bool = False) -> List[User]:
         """Get all users."""
         query = db.query(User)
         if not include_inactive:
@@ -97,7 +99,7 @@ class AuthService:
         return query.all()
     
     @staticmethod
-    def get_users_by_role(db: Session, role: UserRole) -> list[User]:
+    def get_users_by_role(db: Session, role: UserRole) -> List[User]:
         """Get all active users with a specific role."""
         return db.query(User).filter(
             User.role == role,

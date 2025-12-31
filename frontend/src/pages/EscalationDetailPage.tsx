@@ -17,6 +17,7 @@ import toast from 'react-hot-toast';
 
 import Header from '../components/layout/Header';
 import { escalationsApi } from '../api/escalations';
+import { usersApi } from '../api/users';
 import { useAuthStore } from '../stores/authStore';
 import {
     formatDate,
@@ -33,6 +34,8 @@ export default function EscalationDetailPage() {
     const queryClient = useQueryClient();
     const [noteContent, setNoteContent] = useState('');
 
+    const isManagerOrAdmin = user?.role === 'admin' || user?.role === 'manager';
+
     // Fetch escalation details
     const { data: escalation, isLoading, error } = useQuery({
         queryKey: ['escalation', id],
@@ -47,6 +50,19 @@ export default function EscalationDetailPage() {
         enabled: !!id,
     });
 
+    // Fetch available resolvers for manual assignment
+    const { data: availableResolvers } = useQuery({
+        queryKey: ['available-resolvers'],
+        queryFn: usersApi.getAvailableResolvers,
+        enabled: isManagerOrAdmin,
+    });
+
+    const { data: notes } = useQuery({
+        queryKey: ['notes', id],
+        queryFn: () => escalationsApi.getNotes(id!),
+        enabled: !!id,
+    });
+
     // Mutations
     const statusMutation = useMutation({
         mutationFn: (newStatus: EscalationStatus) =>
@@ -54,8 +70,12 @@ export default function EscalationDetailPage() {
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['escalation', id] });
             queryClient.invalidateQueries({ queryKey: ['timeline', id] });
+            queryClient.invalidateQueries({ queryKey: ['notes', id] });
             toast.success('Status updated successfully');
         },
+        onError: (err: any) => {
+            toast.error(err.response?.data?.detail || 'Failed to update status');
+        }
     });
 
     const noteMutation = useMutation({
@@ -65,8 +85,28 @@ export default function EscalationDetailPage() {
             setNoteContent('');
             queryClient.invalidateQueries({ queryKey: ['escalation', id] });
             queryClient.invalidateQueries({ queryKey: ['timeline', id] });
+            queryClient.invalidateQueries({ queryKey: ['notes', id] });
             toast.success('Note added');
         },
+    });
+
+    const { data: recommendations } = useQuery({
+        queryKey: ['escalation-recommendations', id],
+        queryFn: () => escalationsApi.getRecommendations(id!),
+        enabled: !!id && isManagerOrAdmin,
+    });
+
+    const assignMutation = useMutation({
+        mutationFn: (assigneeId: string) =>
+            escalationsApi.assign(id!, { assignee_id: assigneeId }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['escalation', id] });
+            queryClient.invalidateQueries({ queryKey: ['timeline', id] });
+            toast.success('Assignee updated');
+        },
+        onError: (err: any) => {
+            toast.error(err.response?.data?.detail || 'Failed to assign');
+        }
     });
 
     // WebSocket for real-time updates
@@ -97,13 +137,11 @@ export default function EscalationDetailPage() {
     if (isLoading) return <div className="p-10 text-center text-slate-400">Loading escalation...</div>;
     if (error || !escalation) return <div className="p-10 text-center text-danger-400">Escalation not found</div>;
 
-    const isResolver = escalation.assignedTo === user?.id;
-    const isManagerOrAdmin = user?.role === 'admin' || user?.role === 'manager';
+    const isResolver = user?.id === escalation.assignedTo;
     const canUpdateStatus = isResolver || isManagerOrAdmin;
 
     // Filter AI resolution suggestions
     const resolutionSuggestions = escalation.aiSuggestions?.find(s => s.suggestionType === 'resolution');
-    const assignmentSuggestions = escalation.aiSuggestions?.find(s => s.suggestionType === 'assignment');
 
     return (
         <div className="min-h-screen">
@@ -240,11 +278,32 @@ export default function EscalationDetailPage() {
                                     </div>
                                     <div className="flex-1">
                                         <div className="text-xs text-slate-500 uppercase tracking-wider">Assignee</div>
-                                        <div className="text-white font-medium">
-                                            {escalation.assigneeName || (
-                                                <span className="text-slate-500 italic">Unassigned</span>
-                                            )}
-                                        </div>
+                                        {isManagerOrAdmin ? (
+                                            <div className="mt-1">
+                                                <select
+                                                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-primary-500"
+                                                    value={escalation.assignedTo || ''}
+                                                    onChange={(e) => {
+                                                        if (e.target.value) assignMutation.mutate(e.target.value);
+                                                    }}
+                                                    disabled={assignMutation.isPending}
+                                                >
+                                                    <option value="">Unassigned</option>
+                                                    {availableResolvers?.map(res => (
+                                                        <option key={res.id} value={res.id}>{res.fullName} ({res.currentEscalationCount}/{res.maxConcurrentEscalations})</option>
+                                                    ))}
+                                                    {escalation.assignedTo && !availableResolvers?.find(r => r.id === escalation.assignedTo) && (
+                                                        <option value={escalation.assignedTo}>{escalation.assigneeName}</option>
+                                                    )}
+                                                </select>
+                                            </div>
+                                        ) : (
+                                            <div className="text-white font-medium">
+                                                {escalation.assigneeName || (
+                                                    <span className="text-slate-500 italic">Unassigned</span>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-3">
@@ -280,27 +339,49 @@ export default function EscalationDetailPage() {
                             </div>
                         </div>
 
-                        {/* AI Recommended Assignee (For Managers) */}
-                        {isManagerOrAdmin && assignmentSuggestions && !escalation.assignedTo && (
+                        {/* AI Recommendations (For Managers) */}
+                        {isManagerOrAdmin && recommendations && recommendations.length > 0 && !escalation.assignedTo && (
                             <div className="glass-card p-6 bg-primary-500/5 border-primary-500/30">
                                 <div className="flex items-center gap-2 text-primary-400 font-semibold mb-4 text-sm">
                                     <Sparkles size={16} />
-                                    AI Assignment Suggestion
+                                    AI Moderator Recommendations
                                 </div>
-                                <div className="space-y-3">
-                                    <div className="flex items-center gap-2 text-white text-sm font-medium">
-                                        <UserIcon size={14} className="text-primary-400" />
-                                        {assignmentSuggestions.content.recommended_user_name}
-                                    </div>
-                                    <p className="text-slate-400 text-xs italic leading-relaxed">
-                                        {assignmentSuggestions.content.reason}
-                                    </p>
-                                    <button
-                                        onClick={() => escalationsApi.assign(id!, { assignee_id: assignmentSuggestions.content.recommended_user_id }).then(() => queryClient.invalidateQueries({ queryKey: ['escalation', id] }))}
-                                        className="w-full btn-primary text-xs py-2"
-                                    >
-                                        Accept Suggestion
-                                    </button>
+                                <div className="space-y-4">
+                                    {recommendations.slice(0, 3).map((rec: any) => (
+                                        <div key={rec.user_id} className="p-3 rounded-lg bg-slate-900/50 border border-slate-700/50">
+                                            <div className="flex justify-between items-start mb-2">
+                                                <div className="flex items-center gap-2">
+                                                    <div className="w-8 h-8 rounded-full bg-primary-500/10 flex items-center justify-center text-primary-400 font-bold text-xs">
+                                                        {rec.full_name.charAt(0)}
+                                                    </div>
+                                                    <div>
+                                                        <div className="text-white text-sm font-medium">{rec.full_name}</div>
+                                                        <div className="text-[10px] text-slate-500">
+                                                            Workload: {rec.current_workload}/{rec.max_capacity}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div className="text-xs font-bold text-primary-400">
+                                                    {Math.round(rec.score * 100)}% Match
+                                                </div>
+                                            </div>
+                                            <div className="mb-3">
+                                                {rec.reasons.map((reason: string, i: number) => (
+                                                    <div key={i} className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                                                        <CheckCircle size={10} className="text-success-500/70" />
+                                                        {reason}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <button
+                                                onClick={() => assignMutation.mutate(rec.user_id)}
+                                                disabled={assignMutation.isPending}
+                                                className="w-full py-1.5 rounded bg-primary-500/20 hover:bg-primary-500/30 text-primary-400 text-[10px] font-bold uppercase tracking-wider transition-colors disabled:opacity-50"
+                                            >
+                                                Assign This Moderator
+                                            </button>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
                         )}
@@ -311,6 +392,27 @@ export default function EscalationDetailPage() {
                                 <MessageSquare size={20} className="text-slate-400" />
                                 Notes
                             </h2>
+
+                            {/* Existing Notes List */}
+                            <div className="space-y-4 mb-6 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin">
+                                {notes?.map((note) => (
+                                    <div key={note.id} className={`p-4 rounded-lg bg-slate-800/50 border ${note.isInternal ? 'border-primary-500/20 shadow-[0_0_10px_rgba(99,102,241,0.05)]' : 'border-slate-700'}`}>
+                                        <div className="flex justify-between items-start mb-2">
+                                            <span className={`text-xs font-bold ${note.isInternal ? 'text-primary-400' : 'text-slate-400'}`}>
+                                                {note.authorName || 'System'}
+                                            </span>
+                                            <span className="text-[10px] text-slate-500 uppercase tracking-tighter">
+                                                {formatDate(note.createdAt)}
+                                            </span>
+                                        </div>
+                                        <p className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">{note.content}</p>
+                                    </div>
+                                ))}
+                                {(!notes || notes.length === 0) && (
+                                    <p className="text-center text-slate-500 text-sm italic py-4">No notes entered yet</p>
+                                )}
+                            </div>
+
                             <textarea
                                 value={noteContent}
                                 onChange={(e) => setNoteContent(e.target.value)}

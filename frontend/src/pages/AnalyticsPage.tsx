@@ -2,6 +2,7 @@
  * Analytics Page
  * Visual reporting and system performance insights
  */
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
     TrendingUp,
@@ -11,7 +12,10 @@ import {
     BarChart3,
     Calendar,
     ArrowUpRight,
-    ArrowDownRight
+    ArrowDownRight,
+    Layers,
+    ChevronDown,
+    ExternalLink
 } from 'lucide-react';
 import {
     LineChart,
@@ -32,8 +36,89 @@ import {
 
 import Header from '../components/layout/Header';
 import { analyticsApi } from '../api/analytics';
+import { formatRelativeTime } from '../utils/formatters';
+import { Link } from 'react-router-dom';
 
 const COLORS = ['#6366f1', '#a855f7', '#ec4899', '#ef4444', '#f59e0b', '#22c55e'];
+
+function ComplaintClusters() {
+    const [expandedCluster, setExpandedCluster] = useState<string | null>(null);
+    const { data: clusters, isLoading } = useQuery({
+        queryKey: ['complaint-clusters'],
+        queryFn: analyticsApi.getClusters,
+    });
+
+    if (isLoading) return (
+        <div className="glass-card p-6 animate-pulse h-[300px]" />
+    );
+
+    if (!clusters || clusters.length === 0) return null;
+
+    return (
+        <div className="space-y-4">
+            <div className="flex items-center gap-2 mb-2">
+                <Layers size={18} className="text-primary-400" />
+                <h3 className="text-lg font-semibold text-white">AI Complaint Clusters</h3>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {clusters.map((cluster) => (
+                    <div
+                        key={cluster.id}
+                        className={`glass-card overflow-hidden border transition-all duration-300 ${expandedCluster === cluster.id ? 'border-primary-500/50 ring-1 ring-primary-500/20' : 'border-slate-800'
+                            }`}
+                    >
+                        <div
+                            className="p-4 cursor-pointer hover:bg-white/5 flex items-start justify-between"
+                            onClick={() => setExpandedCluster(expandedCluster === cluster.id ? null : cluster.id)}
+                        >
+                            <div className="flex-1">
+                                <div className="flex items-center gap-3">
+                                    <h4 className="font-bold text-white">{cluster.name}</h4>
+                                    {cluster.isRecurrence && (
+                                        <span className="px-1.5 py-0.5 rounded bg-danger-500/20 text-danger-400 text-[10px] font-bold uppercase tracking-wider">
+                                            Recurrence
+                                        </span>
+                                    )}
+                                    <span className="text-xs text-slate-500">{cluster.count} issues</span>
+                                </div>
+                                <p className="text-sm text-slate-400 mt-1">{cluster.description}</p>
+                            </div>
+                            <ChevronDown
+                                size={18}
+                                className={`text-slate-500 transition-transform ${expandedCluster === cluster.id ? 'rotate-180' : ''}`}
+                            />
+                        </div>
+
+                        {expandedCluster === cluster.id && (
+                            <div className="px-4 pb-4 pt-2 border-t border-slate-800/50 bg-slate-900/30">
+                                <div className="space-y-2">
+                                    {cluster.items.map((item) => (
+                                        <Link
+                                            key={item.id}
+                                            to={`/escalations/${item.id}`}
+                                            className="flex items-center justify-between p-2 rounded hover:bg-primary-500/10 group transition-colors"
+                                        >
+                                            <div className="min-w-0">
+                                                <p className="text-xs font-medium text-slate-200 group-hover:text-primary-300 truncate">
+                                                    {item.title}
+                                                </p>
+                                                <p className="text-[10px] text-slate-500">
+                                                    {item.clientName || 'General'} • {formatRelativeTime(item.createdAt)}
+                                                </p>
+                                            </div>
+                                            <ExternalLink size={12} className="text-slate-600 group-hover:text-primary-400" />
+                                        </Link>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
 
 export default function AnalyticsPage() {
     // Fetch dashboard stats (includes trends)
@@ -285,6 +370,9 @@ export default function AnalyticsPage() {
                         </div>
                     </div>
                 </div>
+
+                {/* Complaint Clusters Section */}
+                <ComplaintClusters />
             </div>
         </div>
     );

@@ -19,6 +19,7 @@ import EscalationDetailPage from './pages/EscalationDetailPage';
 import ClientsPage from './pages/ClientsPage';
 import TeamPage from './pages/TeamPage';
 import AnalyticsPage from './pages/AnalyticsPage';
+import AdminSettingsPage from './pages/AdminSettingsPage';
 
 // Create a QueryClient instance
 const queryClient = new QueryClient({
@@ -81,6 +82,7 @@ function App() {
             <Route path="escalations/:id" element={<EscalationDetailPage />} />
             <Route path="clients" element={<ClientsPage />} />
             <Route path="team" element={<TeamPage />} />
+            <Route path="settings" element={<AdminSettingsPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
           </Route>
 

@@ -3,11 +3,12 @@ Escalation Service
 Business logic for escalation management.
 """
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
+from sqlalchemy import and_, or_
 
 from app.models.escalation import Escalation, EscalationStatus, EscalationPriority
 from app.models.timeline import TimelineEvent, ActionType
@@ -15,6 +16,7 @@ from app.models.note import Note
 from app.models.client import Client
 from app.models.user import User, UserRole
 from app.models.project import Project
+from app.models.note import Note
 from app.core.websocket import manager
 
 
@@ -36,7 +38,7 @@ class EscalationService:
         churn_risk: float = 0.0
     ) -> Escalation:
         """Create a new escalation."""
-        escalation = Escalation(
+        new_escalation = Escalation(
             title=title,
             description=description,
             executive_summary=executive_summary,
@@ -48,20 +50,67 @@ class EscalationService:
             churn_risk=churn_risk,
             created_by=created_by
         )
-        db.add(escalation)
+        db.add(new_escalation)
         db.commit()
-        db.refresh(escalation)
+        db.refresh(new_escalation)
+        
+        # Check for repeated complaints
+        # Same client, open status, similar title keywords?
+        # Simple heuristic: exact match on client_id and status != RESOLVED
+        # And title similarity check could be done via simple string containment or AI
+        
+        if client_id:
+            existing_open = db.query(Escalation).filter(
+                Escalation.client_id == client_id,
+                Escalation.id != new_escalation.id
+            ).all()
+            
+            best_match_note = None
+            is_best_match_resolved = False
+
+            for existing in existing_open:
+                # Basic keyword overlap check
+                new_words = set(title.lower().split())
+                existing_words = set(existing.title.lower().split())
+                overlap = new_words.intersection(existing_words)
+                
+                # If significant overlap
+                if len(overlap) >= 2:
+                    is_resolved = existing.status == EscalationStatus.RESOLVED
+                    
+                    if is_resolved:
+                        note_text = f"RECURRENCE DETECTED: This issue is similar to resolved Escalation #{existing.id}: '{existing.title}'. Resolution date: {existing.resolved_at.strftime('%Y-%m-%d') if existing.resolved_at else 'Unknown'}."
+                        best_match_note = note_text
+                        is_best_match_resolved = True
+                        # If we found a resolved one, that's what we want to highlight most for "recurrence"
+                        break
+                    else:
+                        note_text = f"Potential repeated complaint detected. Similar to open Escalation #{existing.id}: '{existing.title}'"
+                        if not best_match_note:
+                            best_match_note = note_text
+
+            if best_match_note:
+                # Add system note
+                new_note = Note(
+                    escalation_id=new_escalation.id,
+                    author_id=created_by,
+                    content=best_match_note,
+                    is_internal=True
+                )
+                db.add(new_note)
+        
+        db.commit()
         
         # Create timeline event
         EscalationService._add_timeline_event(
             db,
-            escalation.id,
+            new_escalation.id,
             created_by,
             ActionType.CREATED,
             f"Escalation created with priority: {priority.value}"
         )
         
-        return escalation
+        return new_escalation
     
     @staticmethod
     def get_escalation_by_id(db: Session, escalation_id: UUID) -> Optional[Escalation]:
@@ -77,7 +126,7 @@ class EscalationService:
         assigned_to: Optional[UUID] = None,
         page: int = 1,
         page_size: int = 20
-    ) -> tuple[list[Escalation], int]:
+    ) -> Tuple[List[Escalation], int]:
         """Get escalations with optional filters and pagination."""
         query = db.query(Escalation)
         
@@ -100,6 +149,65 @@ class EscalationService:
         return escalations, total
     
     @staticmethod
+    def get_assignee_recommendations(db: Session, escalation_id: UUID) -> List[dict]:
+        """
+        Rank users in the same project based on:
+        - Expertise overlap (skills)
+        - Current workload
+        - Previous resolutions (TBD: could check timeline or notes)
+        """
+        escalation = db.query(Escalation).filter(Escalation.id == escalation_id).first()
+        if not escalation or not escalation.project_id:
+            return []
+        
+        # Get users in the same project
+        project_members = db.query(User).join(User.projects).filter(
+            Project.id == escalation.project_id,
+            User.role == UserRole.VIEWER,
+            User.is_active == True
+        ).all()
+        
+        recommendations = []
+        for member in project_members:
+            score = 0.5 # Baseline
+            reasons = []
+            
+            # 1. Skill overlap
+            # Basic tag match
+            tags = set(escalation.title.lower().split())
+            expertise = set([t.lower() for t in (member.expertise_tags or [])])
+            overlap = tags.intersection(expertise)
+            if overlap:
+                match_count = len(overlap)
+                score += (match_count * 0.1)
+                reasons.append(f"Expertise match: {', '.join(overlap)}")
+            
+            # 2. Workload
+            utilization = member.current_escalation_count / max(1, member.max_concurrent_escalations)
+            if utilization < 0.5:
+                score += 0.2
+                reasons.append("Low workload")
+            elif utilization > 0.8:
+                score -= 0.2
+                reasons.append("High workload")
+            
+            # Normalize score
+            score = max(0.0, min(1.0, score))
+            
+            recommendations.append({
+                "user_id": member.id,
+                "full_name": member.full_name,
+                "score": score,
+                "reasons": reasons,
+                "current_workload": member.current_escalation_count,
+                "max_capacity": member.max_concurrent_escalations
+            })
+            
+        # Sort by score descending
+        recommendations.sort(key=lambda x: x["score"], reverse=True)
+        return recommendations
+
+    @staticmethod
     def assign_escalation(
         db: Session,
         escalation_id: UUID,
@@ -112,16 +220,25 @@ class EscalationService:
         if not escalation:
             raise ValueError("Escalation not found")
         
-        # Verify project team restriction
-        if escalation.project_id:
-            # Check if assignee is in the project
-            # Using the relationship members
-            is_member = db.query(User).join(User.projects).filter(
-                User.id == assignee_id,
-                Project.id == escalation.project_id
-            ).first()
-            if not is_member:
-                raise ValueError("Assignee must be a member of the escalation's project")
+        assigner = db.query(User).filter(User.id == assigned_by).first()
+        if not assigner:
+            raise ValueError("Assigner not found")
+
+        # Admin can assign anyone (cross-department)
+        # Manager restricted to their own department team
+        if assigner.role == UserRole.MANAGER:
+            # Check department match via project
+            if escalation.project:
+                if escalation.project.department_id != assigner.department_id:
+                    raise ValueError("Managers can only assign escalations in their own department")
+            
+            # Verify assignee is in the same department
+            assignee = db.query(User).filter(User.id == assignee_id).first()
+            if not assignee:
+                raise ValueError("Assignee not found")
+            
+            if assignee.department_id != assigner.department_id:
+                raise ValueError("Managers can only assign members of the same department")
 
         old_assignee_id = escalation.assigned_to
         
@@ -233,22 +350,73 @@ class EscalationService:
         return note
     
     @staticmethod
-    def get_notes(db: Session, escalation_id: UUID) -> list[Note]:
+    def get_notes(db: Session, escalation_id: UUID) -> List[Note]:
         """Get all notes for an escalation."""
         return db.query(Note).filter(Note.escalation_id == escalation_id) \
             .order_by(Note.created_at.desc()).all()
     
     @staticmethod
-    def get_timeline(db: Session, escalation_id: UUID) -> list[TimelineEvent]:
+    def get_timeline(db: Session, escalation_id: UUID) -> List[TimelineEvent]:
         """Get timeline events for an escalation."""
         return db.query(TimelineEvent).filter(TimelineEvent.escalation_id == escalation_id) \
             .order_by(TimelineEvent.created_at.asc()).all()
     
     @staticmethod
+    def process_ai_intelligence(db: Session, escalation_id: UUID) -> None:
+        """
+        Process an escalation with AI: extract insights, map projects, and store suggestions.
+        Can be called for both automated and manual escalations.
+        """
+        from app.agents.complaint_agent import ComplaintIntelligenceAgent
+        from app.models.escalation import EscalationPriority
+
+        escalation = db.query(Escalation).filter(Escalation.id == escalation_id).first()
+        if not escalation:
+            return
+
+        agent = ComplaintIntelligenceAgent()
+        # Note: In a real system, we'd pass original email data if available.
+        # For manual ones, we use title and description.
+        analysis = agent.analyze_complaint(
+            escalation.title,
+            escalation.description,
+            "" # Sender email unknown for manual
+        )
+
+        # Update escalation fields with AI insights
+        priority_map = {
+            "low": EscalationPriority.LOW,
+            "medium": EscalationPriority.MEDIUM,
+            "high": EscalationPriority.HIGH,
+            "critical": EscalationPriority.CRITICAL
+        }
+        
+        escalation.executive_summary = analysis.executive_summary
+        escalation.priority = priority_map.get(analysis.priority, escalation.priority)
+        escalation.complaint_type = analysis.complaint_type
+        escalation.sentiment_score = analysis.sentiment_score
+        escalation.churn_risk = analysis.churn_risk
+
+        # Map project if not already set
+        if not escalation.project_id:
+            escalation.project_id = EscalationService._map_type_to_project(db, analysis.complaint_type)
+
+        # Store resolution suggestions
+        if analysis.resolution_suggestions:
+            EscalationService.store_ai_resolution_suggestions(
+                db, escalation.id, analysis.resolution_suggestions
+            )
+
+        # Trigger moderator suggestions
+        EscalationService.get_suggested_moderators(db, escalation.id)
+        
+        db.commit()
+
+    @staticmethod
     def store_ai_resolution_suggestions(
         db: Session,
         escalation_id: UUID,
-        suggestions: list[str]
+        suggestions: List[str]
     ) -> None:
         """
         Store AI-generated resolution suggestions in the ai_suggestions table.
@@ -258,15 +426,26 @@ class EscalationService:
             
         from app.models.ai_suggestion import AISuggestion
         
-        suggestion = AISuggestion(
-            escalation_id=escalation_id,
-            suggestion_type="resolution",
-            content={
-                "steps": suggestions
-            },
-            confidence_score=0.8  # Default confidence for extraction
-        )
-        db.add(suggestion)
+        # Avoid duplicates
+        existing = db.query(AISuggestion).filter(
+            AISuggestion.escalation_id == escalation_id,
+            AISuggestion.suggestion_type == "resolution"
+        ).first()
+        
+        if existing:
+            existing.content = {"steps": suggestions}
+            existing.created_at = datetime.utcnow()
+        else:
+            suggestion = AISuggestion(
+                escalation_id=escalation_id,
+                suggestion_type="resolution",
+                content={
+                    "steps": suggestions
+                },
+                confidence_score=0.8  # Default confidence for extraction
+            )
+            db.add(suggestion)
+        
         db.commit()
 
     @staticmethod
@@ -306,7 +485,7 @@ class EscalationService:
     def get_suggested_moderators(
         db: Session,
         escalation_id: UUID
-    ) -> list[dict]:
+    ) -> List[dict]:
         """
         Get suggested moderators for an escalation based on skills and workload.
         """

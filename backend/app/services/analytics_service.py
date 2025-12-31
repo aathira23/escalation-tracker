@@ -15,8 +15,17 @@ from app.models.user import User, UserRole
 from app.schemas.analytics import (
     DashboardStats, PriorityBreakdown, StatusBreakdown, TrendItem, ResolutionRate,
     ClientAnalytics, ClientAnalyticsItem,
-    TeamAnalytics, TeamMemberAnalytics
+    TeamAnalytics, TeamMemberAnalytics, Insights, InsightItem, ComplaintTypeBreakdown,
+    ComplaintCluster, ClusterItem
 )
+from app.agents.complaint_agent import ComplaintIntelligenceAgent
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
+from app.config import get_settings
+settings = get_settings()
 
 
 class AnalyticsService:
@@ -256,3 +265,240 @@ class AnalyticsService:
             totalMembers=len(members),
             overloadedMembers=overloaded
         )
+
+    @staticmethod
+    def get_ai_insights(db: Session) -> Insights:
+        """
+        Generate AI-powered insights from recent escalations.
+        Uses Gemini to identify patterns, bottlenecks, and trends.
+        """
+        # Fetch recent data (last 30 days)
+        limit_date = datetime.utcnow() - timedelta(days=30)
+        recent_escalations = db.query(Escalation).filter(
+            Escalation.created_at >= limit_date
+        ).all()
+        
+        # Calculate types breakdown
+        type_counts = {}
+        for e in recent_escalations:
+            ctype = e.complaint_type or "other"
+            type_counts[ctype] = type_counts.get(ctype, 0) + 1
+            
+        total_recent = len(recent_escalations)
+        breakdown = []
+        for ctype, count in type_counts.items():
+            breakdown.append(ComplaintTypeBreakdown(
+                complaintType=ctype,
+                count=count,
+                percentage=round((count / total_recent * 100), 1) if total_recent > 0 else 0
+            ))
+        breakdown.sort(key=lambda x: x.count, reverse=True)
+        
+        # Generate Insights using Gemini
+        insights_list = []
+        if settings.gemini_api_key and genai and recent_escalations:
+            try:
+                # Prepare context for AI
+                context = f"Analyzed {total_recent} escalations from the last 30 days.\n"
+                context += "Complaint Types: " + ", ".join([f"{b.complaintType} ({b.count})" for b in breakdown[:5]]) + "\n"
+                
+                # Add sample of high priority issues
+                high_pri = [e for e in recent_escalations if e.priority == EscalationPriority.CRITICAL]
+                if high_pri:
+                    context += "Critical Issues Samples: \n"
+                    for e in high_pri[:3]:
+                        context += f"- {e.title}\n"
+                        
+                # Prompt
+                model = genai.GenerativeModel('gemini-2.0-flash')
+                prompt = f"""
+                Analyze this escalation data and generate 3-5 strategic insights.
+                Context:
+                {context}
+                
+                Identify:
+                1. Emerging trends (e.g., "Top recurring complaint type this week: [Type]")
+                2. Operational bottlenecks (e.g., "Most complaints get delayed during the '[Stage]' stage")
+                3. Systematic/Project issues (e.g., "Project [Name] shows a steady increase in complaints")
+                
+                Be specific and use entity names from the context.
+                
+                Return JSON in this format:
+                [
+                    {{
+                        "category": "Trend|Bottleneck|System",
+                        "title": "Short title",
+                        "description": "2 sentence explanation",
+                        "severity": "info|warning|critical",
+                        "actionable": true
+                    }}
+                ]
+                """
+                
+                response = model.generate_content(prompt)
+                import json
+                text = response.text.strip()
+                if text.startswith("```"):
+                     text = text.split("```")[1]
+                     if text.startswith("json"):
+                         text = text[4:]
+                
+                data = json.loads(text)
+                for item in data:
+                    insights_list.append(InsightItem(
+                        category=item.get("category", "General"),
+                        title=item.get("title", "Insight"),
+                        description=item.get("description", ""),
+                        severity=item.get("severity", "info"),
+                        actionable=item.get("actionable", True)
+                    ))
+                    
+            except Exception as e:
+                print(f"Error generating AI insights: {e}")
+                # Fallback handled below
+        
+        if not insights_list:
+            # Fallback hardcoded insights if AI fails or no key
+            if breakdown and breakdown[0].count > 0:
+                insights_list.append(InsightItem(
+                    category="Trend",
+                    title=f"High Volume of {breakdown[0].complaintType} Issues",
+                    description=f"{breakdown[0].complaintType} accounts for {breakdown[0].percentage}% of recent escalations.",
+                    severity="warning",
+                    actionable=True
+                ))
+            else:
+                 insights_list.append(InsightItem(
+                    category="Info",
+                    title=f"Insufficient Data",
+                    description=f"Not enough data to generate insights yet.",
+                    severity="info",
+                    actionable=False
+                ))
+        
+        return Insights(
+            topComplaintTypes=breakdown,
+            insights=insights_list,
+            generatedAt=datetime.utcnow().date()
+        )
+
+    @staticmethod
+    def get_complaint_clusters(db: Session) -> List[ComplaintCluster]:
+        """
+        Group recent escalations into clusters based on title/description similarity.
+        Uses a mix of keyword matching and Gemini for semantic grouping.
+        """
+        recent_escalations = db.query(Escalation).filter(
+            Escalation.status != EscalationStatus.RESOLVED
+        ).order_by(Escalation.created_at.desc()).limit(50).all()
+        
+        if not recent_escalations:
+            return []
+            
+        clusters = []
+        
+        if settings.gemini_api_key and genai:
+            try:
+                # Prepare data for AI clustering
+                data_for_ai = []
+                for e in recent_escalations:
+                    data_for_ai.append({
+                        "id": str(e.id),
+                        "title": e.title,
+                        "description": e.description[:100],
+                        "client": e.client.name if e.client else "Unknown"
+                    })
+                
+                model = genai.GenerativeModel('gemini-2.0-flash')
+                prompt = f"""
+                Group these {len(data_for_ai)} customer complaints into logical clusters based on semantic similarity.
+                Data:
+                {json.dumps(data_for_ai)}
+                
+                Identify themes like "Billing Disputes", "API Reliability", "Login Failures", etc.
+                For each cluster, provide:
+                - A short name
+                - A brief description
+                - Severity (info, warning, critical)
+                - List of complaint IDs in that cluster
+                - Whether it indicates a recurrence of a known issue (true/false)
+                
+                Return JSON only:
+                [
+                    {{
+                        "name": "Cluster Name",
+                        "description": "Cluster Description",
+                        "severity": "warning",
+                        "ids": ["id1", "id2"],
+                        "isRecurrence": false
+                    }}
+                ]
+                """
+                
+                response = model.generate_content(prompt)
+                import json
+                text = response.text.strip()
+                if text.startswith("```"):
+                     text = text.split("```")[1]
+                     if text.startswith("json"):
+                         text = text[4:]
+                
+                cluster_data = json.loads(text)
+                
+                # Map back to models
+                esc_map = {str(e.id): e for e in recent_escalations}
+                
+                for c in cluster_data:
+                    items = []
+                    for eid in c.get("ids", []):
+                        if eid in esc_map:
+                            e = esc_map[eid]
+                            items.append(ClusterItem(
+                                id=e.id,
+                                title=e.title,
+                                clientName=e.client.name if e.client else None,
+                                createdAt=e.created_at
+                            ))
+                    
+                    if items:
+                        clusters.append(ComplaintCluster(
+                            id=f"cluster-{len(clusters)}",
+                            name=c.get("name", "Miscellaneous"),
+                            description=c.get("description", ""),
+                            severity=c.get("severity", "info"),
+                            count=len(items),
+                            items=items,
+                            isRecurrence=c.get("isRecurrence", False)
+                        ))
+                        
+            except Exception as e:
+                print(f"Error in AI clustering: {e}")
+                
+        # If AI fails or no key, return empty or basic logic
+        # For now, if AI failed we might just return empty or a "General" cluster
+        if not clusters and recent_escalations:
+            # Fallback: Group by client
+            client_groups = {}
+            for e in recent_escalations:
+                cname = e.client.name if e.client else "General"
+                if cname not in client_groups:
+                    client_groups[cname] = []
+                client_groups[cname].append(e)
+                
+            for cname, escs in client_groups.items():
+                if len(escs) > 1:
+                    clusters.append(ComplaintCluster(
+                        id=f"client-cluster-{cname}",
+                        name=f"Complaints from {cname}",
+                        description=f"{len(escs)} active issues for internal review.",
+                        severity="info",
+                        count=len(escs),
+                        items=[ClusterItem(
+                            id=e.id,
+                            title=e.title,
+                            clientName=e.client.name if e.client else None,
+                            createdAt=e.created_at
+                        ) for e in escs]
+                    ))
+                    
+        return clusters
